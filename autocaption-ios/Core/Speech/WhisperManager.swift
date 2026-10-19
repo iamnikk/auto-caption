@@ -93,9 +93,10 @@ public final class WhisperManager: ObservableObject, @unchecked Sendable {
                 verbose: false,
                 task: .transcribe,
                 temperature: 0.0,
-                wordTimestamps: true
+                skipSpecialTokens: true,
+                wordTimestamps: true,
+                suppressBlank: true
             )
-            options.suppressTokens = []
             
             // Set language if provided and not "auto"
             if let loc = locale, loc.identifier != "auto" {
@@ -121,6 +122,18 @@ public final class WhisperManager: ObservableObject, @unchecked Sendable {
                 "MUSIC", "APPLAUSE", "LAUGHTER"
             ]
             
+            func isNoiseOrSpecialToken(_ text: String) -> Bool {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return true }
+                // Strip Whisper special tokens like <|startoftranscript|>, <|en|>, <|transcribe|>, <|notimestamps|>
+                if trimmed.contains("<|") || trimmed.contains("|>") { return true }
+                if trimmed.hasPrefix("<") && trimmed.hasSuffix(">") { return true }
+                if nonSpeechTokens.contains(trimmed.uppercased()) { return true }
+                let clean = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "[](),.!?<>|"))
+                if clean.isEmpty || nonSpeechTokens.contains(clean.uppercased()) { return true }
+                return false
+            }
+            
             for result in transcriptionResults {
                 let detectedLang = result.language ?? "auto"
                 print("🗣️ Whisper detected language: \(detectedLang), text: \(result.text)")
@@ -136,10 +149,9 @@ public final class WhisperManager: ObservableObject, @unchecked Sendable {
                     if let words = segment.words, !words.isEmpty {
                         for wordTiming in words {
                             let rawWord = wordTiming.word.trimmingCharacters(in: .whitespacesAndNewlines)
-                            let cleanWord = rawWord.trimmingCharacters(in: CharacterSet(charactersIn: "[](),.!?"))
                             
-                            // Only include genuine speech words with positive duration and probability
-                            if !cleanWord.isEmpty && !nonSpeechTokens.contains(rawWord.uppercased()) && wordTiming.probability > 0.15 {
+                            // Only include genuine speech words (rejecting noise and special tokens)
+                            if !isNoiseOrSpecialToken(rawWord) && wordTiming.probability > 0.15 {
                                 parsedWords.append(CaptionWord(
                                     text: rawWord,
                                     start: Double(wordTiming.start),
@@ -154,10 +166,7 @@ public final class WhisperManager: ObservableObject, @unchecked Sendable {
                         let segmentText = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         let rawTokens = segmentText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
                         
-                        let speechTokens = rawTokens.filter { token in
-                            let clean = token.trimmingCharacters(in: CharacterSet(charactersIn: "[](),.!?"))
-                            return !clean.isEmpty && !nonSpeechTokens.contains(token.uppercased())
-                        }
+                        let speechTokens = rawTokens.filter { !isNoiseOrSpecialToken($0) }
                         
                         if !speechTokens.isEmpty {
                             let duration = Double(segment.end - segment.start)

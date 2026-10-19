@@ -569,6 +569,7 @@ public struct EditorContentView: View {
                 let thumb = await videoImportManager.generateThumbnail(for: imported.localURL)
                 
                 await MainActor.run {
+                    self.isLoading = false
                     self.videoThumbnail = thumb
                     self.setupProjectAndPlayer(with: imported)
                 }
@@ -599,6 +600,7 @@ public struct EditorContentView: View {
                 let thumb = await videoImportManager.generateThumbnail(for: imported.localURL)
                 
                 await MainActor.run {
+                    self.isLoading = false
                     self.videoThumbnail = thumb
                     self.setupProjectAndPlayer(with: imported)
                 }
@@ -612,6 +614,7 @@ public struct EditorContentView: View {
     }
     
     private func setupProjectAndPlayer(with imported: VideoImportManager.ImportedVideo) {
+        self.isLoading = false
         let initialAspect: AspectRatio = imported.metadata.isPortrait ? .portrait9_16 : .landscape16_9
         self.currentProject = Project(
             sourceVideoURL: imported.localURL,

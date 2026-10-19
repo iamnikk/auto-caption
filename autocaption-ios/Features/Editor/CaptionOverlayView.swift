@@ -31,8 +31,8 @@ public struct CaptionOverlayView: View {
             return lingering
         }
         
-        // 3. Preview mode: if video is paused at start (0.0s), show first segment so user sees the preview
-        if currentTime == 0.0, let first = segments.first {
+        // 3. Preview mode: if video is paused at start (0.0s) and speech starts immediately, show first segment
+        if currentTime == 0.0, let first = segments.first, first.start <= 0.6 {
             return first
         }
         
