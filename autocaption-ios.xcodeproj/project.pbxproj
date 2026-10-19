@@ -264,6 +264,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "AutoCaption needs access to the microphone to extract speech from videos.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "AutoCaption needs access to your Photos library to import videos for captioning.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "AutoCaption saves your captioned videos to your Photos library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "AutoCaption uses on-device speech recognition to generate subtitles automatically.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -298,6 +299,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "AutoCaption needs access to the microphone to extract speech from videos.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "AutoCaption needs access to your Photos library to import videos for captioning.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "AutoCaption saves your captioned videos to your Photos library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "AutoCaption uses on-device speech recognition to generate subtitles automatically.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -422,12 +422,30 @@ public struct EditorContentView: View {
         }
     }
     
-    // MARK: - Language Selector Menu (Prompt 2)
+    // MARK: - Language & Engine Selector Menu (Prompt 2)
     private var languageMenu: some View {
         Menu {
-            Section("Speech Language (On-Device)") {
+            Section("Transcription Engine") {
+                ForEach(TranscriptionEngineMode.allCases) { mode in
+                    Button {
+                        transcriptionService.engineMode = mode
+                        if let project = currentProject {
+                            transcribeImportedVideo(project.sourceVideoURL)
+                        }
+                    } label: {
+                        HStack {
+                            Text(mode.rawValue)
+                            if transcriptionService.engineMode == mode {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Section("Speech Language") {
                 ForEach(transcriptionService.availableLocales, id: \.identifier) { locale in
-                    let name = locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+                    let name = locale.identifier == "auto" ? "Auto-Detect Language" : (locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)
                     Button {
                         transcriptionService.selectedLocale = locale
                         if let project = currentProject {
@@ -444,8 +462,10 @@ public struct EditorContentView: View {
                 }
             }
         } label: {
-            Image(systemName: "globe")
-                .foregroundColor(.yellow)
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.and.mic")
+                    .foregroundColor(.yellow)
+            }
         }
     }
     
@@ -520,6 +540,11 @@ public struct EditorContentView: View {
                 
                 if videoExporter.isExporting {
                     ProgressView(value: videoExporter.exportProgress)
+                        .progressViewStyle(.linear)
+                        .tint(.yellow)
+                        .frame(width: 180)
+                } else if transcriptionService.isTranscribing {
+                    ProgressView(value: transcriptionService.progress)
                         .progressViewStyle(.linear)
                         .tint(.yellow)
                         .frame(width: 180)
@@ -602,13 +627,14 @@ public struct EditorContentView: View {
     
     private func transcribeImportedVideo(_ videoURL: URL) {
         Task {
-            await MainActor.run { self.isLoading = false }
-            
             do {
                 let words = try await transcriptionService.transcribeVideo(videoURL: videoURL)
                 await MainActor.run {
                     self.rawWords = words
                     self.applyPacing(self.pacingMode)
+                    if words.isEmpty {
+                        self.displayError("No speech detected in this video. If your video is in a specific language, you can select it from the top-right audio icon.")
+                    }
                 }
             } catch {
                 await MainActor.run {

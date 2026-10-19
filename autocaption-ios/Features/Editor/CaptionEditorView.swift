@@ -30,26 +30,54 @@ public struct CaptionEditorView: View {
             editorToolbar
                 .padding(.horizontal)
             
-            // 2. Scrollable Segment List
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 10) {
-                        ForEach($segments) { $segment in
-                            let isPlayingNow = currentTime >= segment.start && currentTime <= segment.end
-                            let isSelected = selectedSegmentID == segment.id
-                            
-                            segmentRow(segment: $segment, isPlayingNow: isPlayingNow, isSelected: isSelected)
-                                .id(segment.id)
-                        }
+            if segments.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "captions.bubble")
+                        .font(.system(size: 36))
+                        .foregroundColor(.gray)
+                    Text("No Captions Detected")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("Spoken words from your video appear here automatically. You can also manually add captions at the current timestamp.")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    
+                    Button(action: addCaptionAtPlayhead) {
+                        Label("Add Caption at Playhead", systemImage: "plus.circle.fill")
+                            .font(.footnote.bold())
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.yellow))
                     }
-                    .padding(.horizontal)
-                    .padding(.bottom, 20)
+                    .padding(.top, 4)
                 }
-                .onChange(of: currentTime) { time in
-                    // Auto-scroll to current active segment if desired
-                    if let active = segments.first(where: { time >= $0.start && time <= $0.end }) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            proxy.scrollTo(active.id, anchor: .center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 30)
+            } else {
+                // 2. Scrollable Segment List
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(spacing: 10) {
+                            ForEach($segments) { $segment in
+                                let isPlayingNow = currentTime >= segment.start && currentTime <= segment.end
+                                let isSelected = selectedSegmentID == segment.id
+                                
+                                segmentRow(segment: $segment, isPlayingNow: isPlayingNow, isSelected: isSelected)
+                                    .id(segment.id)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom, 20)
+                    }
+                    .onChange(of: currentTime) { time in
+                        // Auto-scroll to current active segment if desired
+                        if let active = segments.first(where: { time >= $0.start && time <= $0.end }) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                proxy.scrollTo(active.id, anchor: .center)
+                            }
                         }
                     }
                 }

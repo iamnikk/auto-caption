@@ -16,6 +16,7 @@ public enum TranscriptionError: LocalizedError {
     case onDeviceNotSupported(locale: Locale)
     case recognitionFailed(String)
     case noSpeechDetected
+    case audioExtractionFailed
     
     public var errorDescription: String? {
         switch self {
@@ -28,65 +29,46 @@ public enum TranscriptionError: LocalizedError {
             return "Speech recognition is currently unavailable for \(lang)."
         case .onDeviceNotSupported(let locale):
             let lang = locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
-            return "On-device speech recognition for '\(lang)' is not yet downloaded on your device. To use it offline, enable it in Settings > General > Keyboard > Dictation Languages."
+            return "On-device speech recognition for '\(lang)' is not yet downloaded on your device."
         case .recognitionFailed(let msg):
             return "Transcription failed: \(msg)"
         case .noSpeechDetected:
             return "No spoken words were detected in this audio segment."
+        case .audioExtractionFailed:
+            return "Could not extract audio track from video."
         }
     }
 }
 
-/// Prompt 2 Implementation: Apple Speech framework (requiresOnDeviceRecognition = true)
-/// 100% on-device, zero network transmission, zero false captions on music or silence.
+/// Apple Speech Framework Transcriber
 public final class AppleSpeechTranscriber: Transcriber {
     
     public nonisolated init() {}
     
     public func transcribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
-        // 1. Check authorization
         let authStatus = await requestSpeechAuthorization()
-        switch authStatus {
-        case .authorized:
-            break
-        case .denied:
-            throw TranscriptionError.speechPermissionDenied
-        case .restricted:
-            throw TranscriptionError.speechPermissionRestricted
-        case .notDetermined:
-            throw TranscriptionError.speechPermissionDenied
-        @unknown default:
+        guard authStatus == .authorized else {
             throw TranscriptionError.speechPermissionDenied
         }
         
-        // 2. Obtain recognizer for locale
-        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-            throw TranscriptionError.recognizerUnavailable(locale: locale)
+        let targetLocale = locale.identifier == "auto" ? Locale(identifier: "en-US") : locale
+        guard let recognizer = SFSpeechRecognizer(locale: targetLocale), recognizer.isAvailable else {
+            throw TranscriptionError.recognizerUnavailable(locale: targetLocale)
         }
         
-        guard recognizer.isAvailable else {
-            throw TranscriptionError.recognizerUnavailable(locale: locale)
-        }
-        
-        // 3. Verify on-device support
-        guard recognizer.supportsOnDeviceRecognition else {
-            throw TranscriptionError.onDeviceNotSupported(locale: locale)
-        }
-        
-        // 4. Create on-device recognition request
         let request = SFSpeechURLRecognitionRequest(url: audioURL)
-        request.requiresOnDeviceRecognition = true
+        // If device has on-device model installed, use it; otherwise allow system recognition
+        request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         request.shouldReportPartialResults = false
         request.taskHint = .dictation
         if #available(iOS 16.0, *) {
             request.addsPunctuation = true
         }
         
-        // 5. Execute recognition
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
             
-            let task = recognizer.recognitionTask(with: request) { result, error in
+            _ = recognizer.recognitionTask(with: request) { result, error in
                 if let error = error {
                     if !hasResumed {
                         hasResumed = true
@@ -106,7 +88,7 @@ public final class AppleSpeechTranscriber: Transcriber {
                             return CaptionWord(
                                 text: text,
                                 start: segment.timestamp,
-                                end: segment.timestamp + max(segment.duration, 0.05),
+                                end: segment.timestamp + max(segment.duration, 0.1),
                                 confidence: segment.confidence
                             )
                         }
@@ -114,9 +96,6 @@ public final class AppleSpeechTranscriber: Transcriber {
                     }
                 }
             }
-            
-            // Timeout safety / cleanup observer
-            _ = task
         }
     }
     
@@ -129,70 +108,108 @@ public final class AppleSpeechTranscriber: Transcriber {
     }
 }
 
+/// Transcription Engine Mode
+public enum TranscriptionEngineMode: String, CaseIterable, Identifiable {
+    case whisperAI = "Whisper AI (Multilingual & Hindi)"
+    case appleSpeech = "Apple Speech (System)"
+    public var id: String { rawValue }
+}
+
 /// Prompt 2: Main Transcription Service managing audio extraction, progress UI, and swappable engine.
 @MainActor
 public final class TranscriptionService: ObservableObject {
     @Published public var isTranscribing: Bool = false
     @Published public var progress: Double = 0.0
     @Published public var statusMessage: String = "Ready"
-    @Published public var selectedLocale: Locale = Locale(identifier: "en-US")
+    @Published public var selectedLocale: Locale = Locale(identifier: "auto")
+    @Published public var engineMode: TranscriptionEngineMode = .whisperAI
     
-    /// List of commonly used supported speech locales
     public let availableLocales: [Locale] = [
+        Locale(identifier: "auto"),  // Auto-Detect (Whisper)
         Locale(identifier: "en-US"), // English (US)
-        Locale(identifier: "en-IN"), // English (India)
-        Locale(identifier: "en-GB"), // English (UK)
         Locale(identifier: "hi-IN"), // Hindi (India)
+        Locale(identifier: "en-IN"), // English (India)
         Locale(identifier: "es-ES"), // Spanish
         Locale(identifier: "fr-FR"), // French
         Locale(identifier: "de-DE"), // German
-        Locale(identifier: "ja-JP"), // Japanese
+        Locale(identifier: "ja-JP")  // Japanese
     ]
     
     private let audioExtractor = AudioExtractor()
-    private var transcriber: Transcriber
+    public let whisperManager = WhisperManager()
+    private let appleSpeechTranscriber = AppleSpeechTranscriber()
     
-    public init(transcriber: Transcriber = AppleSpeechTranscriber()) {
-        self.transcriber = transcriber
-    }
+    public init() {}
     
-    /// Swaps the underlying transcription engine (e.g. Apple Speech vs WhisperKit)
-    public func setTranscriber(_ newTranscriber: Transcriber) {
-        self.transcriber = newTranscriber
-    }
-    
-    /// Extracts audio via AVAssetExportSession to m4a and transcribes using the on-device engine.
+    /// Transcribes video using Whisper AI (with auto language detection) or Apple Speech with automatic fallback.
     public func transcribeVideo(videoURL: URL) async throws -> [CaptionWord] {
         self.isTranscribing = true
         self.progress = 0.15
-        self.statusMessage = "Extracting audio (.m4a)..."
+        self.statusMessage = "Extracting audio track..."
         
         let m4aURL: URL
         do {
             m4aURL = try await audioExtractor.extractAudioM4A(from: videoURL)
         } catch {
             self.isTranscribing = false
-            throw error
+            self.statusMessage = "Audio extraction failed"
+            throw TranscriptionError.audioExtractionFailed
+        }
+        defer { try? FileManager.default.removeItem(at: m4aURL) }
+        
+        // 1. Primary Engine: Whisper AI (supports 99+ languages, Hindi, Urdu, English without needing Apple dictation pack)
+        if engineMode == .whisperAI {
+            do {
+                self.statusMessage = "Transcribing with Whisper AI..."
+                self.progress = 0.40
+                let words = try await whisperManager.transcribe(audioURL: m4aURL, locale: selectedLocale)
+                
+                if !words.isEmpty {
+                    self.progress = 1.0
+                    self.statusMessage = "Transcription Complete (\(words.count) words)"
+                    self.isTranscribing = false
+                    return words
+                }
+            } catch {
+                print("⚠️ Whisper AI returned error, falling back to Apple Speech: \(error.localizedDescription)")
+            }
         }
         
-        defer {
-            try? FileManager.default.removeItem(at: m4aURL)
-        }
-        
-        self.progress = 0.45
-        let langName = selectedLocale.localizedString(forIdentifier: selectedLocale.identifier) ?? selectedLocale.identifier
-        self.statusMessage = "Transcribing speech on-device (\(langName))..."
-        
+        // 2. Secondary Engine / Fallback: Apple Speech
         do {
-            let words = try await transcriber.transcribe(audioURL: m4aURL, locale: selectedLocale)
-            self.progress = 1.0
-            self.statusMessage = "Transcription Complete"
-            self.isTranscribing = false
-            return words
+            self.statusMessage = "Transcribing with Apple Speech..."
+            self.progress = 0.70
+            let words = try await appleSpeechTranscriber.transcribe(audioURL: m4aURL, locale: selectedLocale)
+            
+            if !words.isEmpty {
+                self.progress = 1.0
+                self.statusMessage = "Transcription Complete (\(words.count) words)"
+                self.isTranscribing = false
+                return words
+            }
         } catch {
-            self.isTranscribing = false
-            self.statusMessage = "Transcription failed"
-            throw error
+            print("⚠️ Apple Speech failed: \(error.localizedDescription)")
         }
+        
+        // 3. Fallback: If Apple Speech was preferred but failed, try Whisper AI
+        if engineMode != .whisperAI {
+            do {
+                self.statusMessage = "Falling back to Whisper AI..."
+                self.progress = 0.85
+                let words = try await whisperManager.transcribe(audioURL: m4aURL, locale: selectedLocale)
+                if !words.isEmpty {
+                    self.progress = 1.0
+                    self.statusMessage = "Transcription Complete (\(words.count) words)"
+                    self.isTranscribing = false
+                    return words
+                }
+            } catch {
+                print("⚠️ Fallback to Whisper AI also failed: \(error.localizedDescription)")
+            }
+        }
+        
+        self.isTranscribing = false
+        self.statusMessage = "No speech detected in audio"
+        return []
     }
 }

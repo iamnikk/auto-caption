@@ -4,8 +4,8 @@ import WhisperKit
 import AVFoundation
 
 /// Production AI Speech Recognition Engine powered by WhisperKit (OpenAI Whisper CoreML)
-/// Transcribes only genuine spoken words with exact timestamps, strictly avoiding captions on music/instrumentals.
-public final class WhisperManager: ObservableObject {
+/// Transcribes genuine spoken words with exact timestamps, strictly avoiding captions on music/instrumentals.
+public final class WhisperManager: ObservableObject, @unchecked Sendable {
     
     @Published public var isModelLoaded: Bool = false
     @Published public var isTranscribing: Bool = false
@@ -13,25 +13,41 @@ public final class WhisperManager: ObservableObject {
     @Published public var statusMessage: String = "Ready"
     
     private var whisperKit: WhisperKit?
-    // Using multilingual tiny model (runs fast and reliably across devices)
     private let modelName: String = "openai_whisper-tiny"
+    private var modelLoadTask: Task<WhisperKit, Error>?
     
     public init() {
+        // Kick off model download/initialization immediately on app launch
         Task {
-            await initializeWhisper()
+            _ = try? await self.getOrInitializeWhisper()
         }
     }
     
-    /// Preloads and prepares the CoreML Whisper model on device
-    public func initializeWhisper() async {
-        await MainActor.run {
-            self.statusMessage = "Loading Whisper AI engine..."
-            self.progress = 0.1
+    /// Thread-safe model initialization that handles concurrent callers cleanly without race conditions.
+    @discardableResult
+    public func getOrInitializeWhisper() async throws -> WhisperKit {
+        if let existing = self.whisperKit {
+            return existing
         }
         
+        if let existingTask = self.modelLoadTask {
+            return try await existingTask.value
+        }
+        
+        let task = Task<WhisperKit, Error> {
+            await MainActor.run {
+                self.statusMessage = "Loading Whisper AI engine..."
+                self.progress = 0.1
+            }
+            print("⏳ Initializing WhisperKit model: \(self.modelName)...")
+            let pipe = try await WhisperKit(model: self.modelName, verbose: false, logLevel: .none)
+            return pipe
+        }
+        
+        self.modelLoadTask = task
+        
         do {
-            print("⏳ Initializing WhisperKit...")
-            let pipe = try await WhisperKit(model: modelName, verbose: false, logLevel: .none)
+            let pipe = try await task.value
             await MainActor.run {
                 self.whisperKit = pipe
                 self.isModelLoaded = true
@@ -39,38 +55,35 @@ public final class WhisperManager: ObservableObject {
                 self.statusMessage = "Whisper AI Ready"
             }
             print("✅ WhisperKit initialized successfully.")
+            return pipe
         } catch {
+            self.modelLoadTask = nil
             print("⚠️ WhisperKit init error: \(error.localizedDescription)")
             await MainActor.run {
-                self.statusMessage = "Ready"
+                self.statusMessage = "Speech model unavailable"
             }
+            throw error
         }
     }
     
     /// Transcribes audio using on-device Whisper CoreML model with exact word timestamps
     public func transcribeAudio(
         from audioURL: URL,
-        maxWordsPerSegment: Int = 4
-    ) async throws -> [SubtitleSegment] {
+        maxWordsPerSegment: Int = 4,
+        locale: Locale? = nil
+    ) async throws -> [CaptionSegment] {
         await MainActor.run {
             self.isTranscribing = true
             self.progress = 0.2
+            self.statusMessage = "Loading Whisper AI engine..."
+        }
+        
+        // Wait for WhisperKit to be loaded and ready
+        let whisper = try await getOrInitializeWhisper()
+        
+        await MainActor.run {
+            self.progress = 0.5
             self.statusMessage = "Transcribing with Whisper AI..."
-        }
-        
-        // Ensure WhisperKit is initialized
-        if self.whisperKit == nil {
-            print("WhisperKit instance not ready, initializing now...")
-            await initializeWhisper()
-        }
-        
-        guard let whisper = self.whisperKit else {
-            print("❌ WhisperKit could not be initialized.")
-            await MainActor.run {
-                self.isTranscribing = false
-                self.statusMessage = "Speech model unavailable"
-            }
-            return []
         }
         
         do {
@@ -83,42 +96,61 @@ public final class WhisperManager: ObservableObject {
                 wordTimestamps: true
             )
             options.suppressTokens = []
-            options.language = nil // Auto-detect language (Hindi, Urdu, English, etc.)
+            
+            // Set language if provided and not "auto"
+            if let loc = locale, loc.identifier != "auto" {
+                let code = (loc.languageCode ?? String(loc.identifier.prefix(2))).lowercased()
+                options.language = code
+                print("🌐 Whisper using target language: \(code)")
+            } else {
+                options.language = nil // Auto-detect language (Hindi, Urdu, English, Spanish, etc.)
+                print("🌐 Whisper language auto-detection active")
+            }
             
             let transcriptionResults: [TranscriptionResult] = try await whisper.transcribe(
                 audioPath: audioURL.path,
                 decodeOptions: options
             )
             
-            var parsedWords: [SubtitleWord] = []
+            var parsedWords: [CaptionWord] = []
             
-            // Non-speech acoustic tags to ignore
+            // Non-speech acoustic tags to ignore (filters music lyrics hallucinations)
             let nonSpeechTokens: Set<String> = [
                 "[MUSIC]", "[APPLAUSE]", "[LAUGHTER]", "[NOISE]", "[SOUND]",
-                "(MUSIC)", "(APPLAUSE)", "(LAUGHTER)", "(NOISE)", "♪", "♫"
+                "(MUSIC)", "(APPLAUSE)", "(LAUGHTER)", "(NOISE)", "♪", "♫",
+                "MUSIC", "APPLAUSE", "LAUGHTER"
             ]
             
             for result in transcriptionResults {
-                print("🗣️ Whisper detected language: \(result.language ?? "auto"), text: \(result.text)")
+                let detectedLang = result.language ?? "auto"
+                print("🗣️ Whisper detected language: \(detectedLang), text: \(result.text)")
                 
                 for segment in result.segments {
-                    // Extract only spoken words with timestamps
+                    // Filter out non-speech / instrumental passages
+                    if segment.noSpeechProb > 0.60 {
+                        print("🔇 Skipping music/non-speech segment (noSpeechProb: \(segment.noSpeechProb)): \(segment.text)")
+                        continue
+                    }
+                    
+                    // Extract words with timestamps
                     if let words = segment.words, !words.isEmpty {
                         for wordTiming in words {
                             let rawWord = wordTiming.word.trimmingCharacters(in: .whitespacesAndNewlines)
                             let cleanWord = rawWord.trimmingCharacters(in: CharacterSet(charactersIn: "[](),.!?"))
                             
-                            // Only include if it's actual speech, not music tags or silent punctuation
-                            if !cleanWord.isEmpty && !nonSpeechTokens.contains(rawWord.uppercased()) {
-                                parsedWords.append(SubtitleWord(
-                                    word: rawWord,
+                            // Only include genuine speech words with positive duration and probability
+                            if !cleanWord.isEmpty && !nonSpeechTokens.contains(rawWord.uppercased()) && wordTiming.probability > 0.15 {
+                                parsedWords.append(CaptionWord(
+                                    text: rawWord,
                                     start: Double(wordTiming.start),
-                                    end: Double(wordTiming.end),
+                                    end: Double(max(wordTiming.end, wordTiming.start + 0.1)),
+                                    isHighlighted: false,
                                     confidence: wordTiming.probability
                                 ))
                             }
                         }
                     } else {
+                        // Fallback: estimate word timestamps evenly across segment duration
                         let segmentText = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         let rawTokens = segmentText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
                         
@@ -134,10 +166,11 @@ public final class WhisperManager: ObservableObject {
                             for (idx, token) in speechTokens.enumerated() {
                                 let wStart = Double(segment.start) + (Double(idx) * perWordDuration)
                                 let wEnd = wStart + perWordDuration
-                                parsedWords.append(SubtitleWord(
-                                    word: token,
+                                parsedWords.append(CaptionWord(
+                                    text: token,
                                     start: wStart,
                                     end: wEnd,
+                                    isHighlighted: false,
                                     confidence: 0.9
                                 ))
                             }
@@ -146,14 +179,14 @@ public final class WhisperManager: ObservableObject {
                 }
             }
             
-            // Build segments strictly from recognized speech words
-            let segments = chunkWordsIntoSegments(parsedWords, maxWords: maxWordsPerSegment)
-            print("✅ Extracted \(segments.count) real spoken subtitle segments.")
+            // Build segments strictly from real speech words
+            let segments = CaptionSegmenter.segment(words: parsedWords, pacing: .fast)
+            print("✅ Extracted \(segments.count) real spoken subtitle segments (\(parsedWords.count) words).")
             
             await MainActor.run {
                 self.isTranscribing = false
                 self.progress = 1.0
-                self.statusMessage = "Transcription Complete"
+                self.statusMessage = "Transcription Complete (\(parsedWords.count) words)"
             }
             
             return segments
@@ -161,52 +194,17 @@ public final class WhisperManager: ObservableObject {
             print("❌ WhisperKit transcription error: \(error.localizedDescription)")
             await MainActor.run {
                 self.isTranscribing = false
-                self.statusMessage = "Ready"
+                self.statusMessage = "Transcription failed"
             }
-            return []
+            throw error
         }
-    }
-    
-    /// Groups individual words into bite-sized segments ideal for vertical reels (3-5 words per screen).
-    public func chunkWordsIntoSegments(
-        _ words: [SubtitleWord],
-        maxWords: Int = 4
-    ) -> [SubtitleSegment] {
-        guard !words.isEmpty else { return [] }
-        
-        var segments: [SubtitleSegment] = []
-        var currentChunk: [SubtitleWord] = []
-        
-        for word in words {
-            currentChunk.append(word)
-            if currentChunk.count >= maxWords {
-                if let first = currentChunk.first, let last = currentChunk.last {
-                    segments.append(SubtitleSegment(
-                        words: currentChunk,
-                        start: first.start,
-                        end: last.end
-                    ))
-                }
-                currentChunk.removeAll()
-            }
-        }
-        
-        if !currentChunk.isEmpty, let first = currentChunk.first, let last = currentChunk.last {
-            segments.append(SubtitleSegment(
-                words: currentChunk,
-                start: first.start,
-                end: last.end
-            ))
-        }
-        
-        return segments
     }
 }
 
-// MARK: - Transcriber Protocol Conformance (Prompt 2 / Swappable)
+// MARK: - Transcriber Protocol Conformance (Prompt 2)
 extension WhisperManager: Transcriber {
     public func transcribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
-        let segments = try await self.transcribeAudio(from: audioURL)
+        let segments = try await self.transcribeAudio(from: audioURL, locale: locale)
         return segments.flatMap(\.words)
     }
 }
