@@ -80,7 +80,7 @@ public struct CaptionOverlayView: View {
                 .scaleEffect(isActive ? 1.08 : 1.0)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isActive)
                 
-        case .wordPop:
+        case .boldPop:
             Text(text.uppercased())
                 .font(.system(size: style.fontSize, weight: .black))
                 .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
@@ -89,7 +89,7 @@ public struct CaptionOverlayView: View {
                 .shadow(color: .black.opacity(0.9), radius: 3, x: 0, y: 2)
                 .animation(.spring(response: 0.25, dampingFraction: 0.5), value: isActive)
                 
-        case .backgroundPill:
+        case .boxed:
             Text(text.uppercased())
                 .font(.system(size: style.fontSize, weight: .bold))
                 .foregroundColor(isActive ? .black : Color(hex: style.textColorHex))
@@ -99,11 +99,41 @@ public struct CaptionOverlayView: View {
                     isActive ? RoundedRectangle(cornerRadius: 8).fill(Color(hex: style.highlightColorHex)) : nil
                 )
                 
-        case .boldOutline, .minimalSub:
+        case .outline, .minimal:
             Text(text)
                 .font(.system(size: style.fontSize, weight: .bold))
                 .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
-                .shadow(color: .black, radius: 1, x: 1, y: 1)
+                .shadow(color: .black, radius: 2, x: 1, y: 1)
+                
+        case .typewriter:
+            Text(text)
+                .font(.system(size: style.fontSize, weight: .medium, design: .monospaced))
+                .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
+                
+        case .bounce:
+            Text(text.uppercased())
+                .font(.system(size: style.fontSize, weight: .heavy))
+                .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
+                .offset(y: isActive ? -6 : 0)
+                .animation(.interpolatingSpring(stiffness: 300, damping: 10), value: isActive)
+                
+        case .glow:
+            Text(text.uppercased())
+                .font(.system(size: style.fontSize, weight: .heavy))
+                .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
+                .shadow(color: isActive ? Color(hex: style.highlightColorHex) : .clear, radius: 8)
+                
+        case .gradient:
+            Text(text.uppercased())
+                .font(.system(size: style.fontSize, weight: .black, design: .rounded))
+                .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
+                .shadow(color: .purple.opacity(0.5), radius: 3)
+                
+        case .handwritten:
+            Text(text)
+                .font(.system(size: style.fontSize, weight: .bold, design: .serif))
+                .italic()
+                .foregroundColor(isActive ? Color(hex: style.highlightColorHex) : Color(hex: style.textColorHex))
         }
     }
 }

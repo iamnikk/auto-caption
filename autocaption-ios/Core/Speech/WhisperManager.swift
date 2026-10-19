@@ -202,3 +202,11 @@ public final class WhisperManager: ObservableObject {
         return segments
     }
 }
+
+// MARK: - Transcriber Protocol Conformance (Prompt 2 / Swappable)
+extension WhisperManager: Transcriber {
+    public func transcribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
+        let segments = try await self.transcribeAudio(from: audioURL)
+        return segments.flatMap(\.words)
+    }
+}

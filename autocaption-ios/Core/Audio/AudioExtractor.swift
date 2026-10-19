@@ -1,8 +1,10 @@
 import Foundation
 import AVFoundation
 
-/// Handles extracting audio from video files and converting to 16kHz 16-bit Mono PCM WAV (Whisper format).
-public final class AudioExtractor {
+/// Handles extracting audio from video files:
+/// 1. AVAssetExportSession to .m4a (Prompt 2 standard format for Apple Speech)
+/// 2. 16kHz 16-bit Mono PCM WAV (Whisper format)
+public final class AudioExtractor: Sendable {
     
     public enum ExtractionError: LocalizedError {
         case noAudioTrack
@@ -16,29 +18,52 @@ public final class AudioExtractor {
             case .readerFailed(let msg):
                 return "Failed to read audio stream: \(msg)"
             case .outputExportFailed:
-                return "Failed to convert audio stream to Whisper compatible format."
+                return "Failed to export audio stream."
             }
         }
     }
     
-    /// Thread-safe context holder to safely coordinate AVFoundation reader/writer across GCD & Swift Concurrency boundaries.
-    private final class ExtractionSession: @unchecked Sendable {
-        let reader: AVAssetReader
-        let trackOutput: AVAssetReaderTrackOutput
-        let writer: AVAssetWriter
-        let writerInput: AVAssetWriterInput
-        let outputURL: URL
+    public init() {}
+    
+    /// Prompt 2: Extracts audio from the video asset using AVAssetExportSession to an .m4a container.
+    public func extractAudioM4A(from videoURL: URL) async throws -> URL {
+        let asset = AVURLAsset(url: videoURL)
         
-        init(reader: AVAssetReader, trackOutput: AVAssetReaderTrackOutput, writer: AVAssetWriter, writerInput: AVAssetWriterInput, outputURL: URL) {
-            self.reader = reader
-            self.trackOutput = trackOutput
-            self.writer = writer
-            self.writerInput = writerInput
-            self.outputURL = outputURL
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            throw ExtractionError.noAudioTrack
+        }
+        
+        guard let exportSession = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetAppleM4A
+        ) else {
+            throw ExtractionError.outputExportFailed
+        }
+        
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".m4a")
+        try? FileManager.default.removeItem(at: outputURL)
+        
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                case .completed:
+                    continuation.resume(returning: outputURL)
+                case .failed:
+                    let err = exportSession.error ?? ExtractionError.outputExportFailed
+                    continuation.resume(throwing: err)
+                case .cancelled:
+                    continuation.resume(throwing: ExtractionError.outputExportFailed)
+                default:
+                    continuation.resume(throwing: ExtractionError.outputExportFailed)
+                }
+            }
         }
     }
-    
-    public init() {}
     
     /// Extracts audio track from video URL to a 16kHz mono WAV file for Whisper.
     public func extractAudioForWhisper(from videoURL: URL) async throws -> URL {
@@ -50,13 +75,10 @@ public final class AudioExtractor {
         
         let outputDirectory = FileManager.default.temporaryDirectory
         let outputURL = outputDirectory.appendingPathComponent(UUID().uuidString + ".wav")
-        
-        // Remove existing file if present
         try? FileManager.default.removeItem(at: outputURL)
         
         let reader = try AVAssetReader(asset: asset)
         
-        // 16kHz Mono 16-bit Linear PCM Settings (Whisper's exact required format)
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16000.0,
@@ -79,26 +101,18 @@ public final class AudioExtractor {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
         
-        let session = ExtractionSession(
-            reader: reader,
-            trackOutput: trackOutput,
-            writer: writer,
-            writerInput: writerInput,
-            outputURL: outputURL
-        )
-        
         return try await withCheckedThrowingContinuation { continuation in
             let queue = DispatchQueue(label: "com.autocaption.audio.extraction")
             
-            session.writerInput.requestMediaDataWhenReady(on: queue) {
-                while session.writerInput.isReadyForMoreMediaData {
-                    if let sampleBuffer = session.trackOutput.copyNextSampleBuffer() {
-                        session.writerInput.append(sampleBuffer)
+            writerInput.requestMediaDataWhenReady(on: queue) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let sampleBuffer = trackOutput.copyNextSampleBuffer() {
+                        writerInput.append(sampleBuffer)
                     } else {
-                        session.writerInput.markAsFinished()
-                        session.writer.finishWriting {
-                            if session.reader.status == .completed && session.writer.status == .completed {
-                                continuation.resume(returning: session.outputURL)
+                        writerInput.markAsFinished()
+                        writer.finishWriting {
+                            if reader.status == .completed && writer.status == .completed {
+                                continuation.resume(returning: outputURL)
                             } else {
                                 continuation.resume(throwing: ExtractionError.outputExportFailed)
                             }
