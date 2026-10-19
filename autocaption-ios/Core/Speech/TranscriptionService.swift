@@ -41,7 +41,7 @@ public enum TranscriptionError: LocalizedError {
 /// 100% on-device, zero network transmission, zero false captions on music or silence.
 public final class AppleSpeechTranscriber: Transcriber {
     
-    public init() {}
+    public nonisolated init() {}
     
     public func transcribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
         // 1. Check authorization

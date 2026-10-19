@@ -5,7 +5,7 @@ import SwiftUI
 // MARK: - Prompt 0: Domain Models
 
 /// CaptionWord: Represents a single word with exact start/end timestamps, confidence, and keyword emphasis state.
-public struct CaptionWord: Identifiable, Codable, Equatable, Sendable {
+public struct CaptionWord: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let id: UUID
     public var text: String
     public var start: TimeInterval
@@ -48,7 +48,7 @@ public struct CaptionWord: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// CaptionSegment: Represents a chunk of words displayed on screen at once.
-public struct CaptionSegment: Identifiable, Codable, Equatable, Sendable {
+public struct CaptionSegment: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let id: UUID
     public var words: [CaptionWord]
     public var start: TimeInterval
@@ -72,7 +72,7 @@ public struct CaptionSegment: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Animation styles
-public enum CaptionAnimation: String, CaseIterable, Identifiable, Codable, Sendable {
+public enum CaptionAnimation: String, CaseIterable, Identifiable, Codable, Hashable, Sendable {
     case none = "None"
     case fade = "Fade"
     case popScale = "Pop Scale"
@@ -83,7 +83,7 @@ public enum CaptionAnimation: String, CaseIterable, Identifiable, Codable, Senda
 }
 
 /// Positioning on video frame
-public struct CaptionPosition: Codable, Equatable, Sendable {
+public struct CaptionPosition: Codable, Equatable, Hashable, Sendable {
     public var verticalOffsetPercentage: CGFloat   // 0.0 top, 0.5 center, 0.75 lower third
     public var horizontalOffsetPercentage: CGFloat // 0.5 center
     
@@ -94,7 +94,7 @@ public struct CaptionPosition: Codable, Equatable, Sendable {
 }
 
 /// 10 Starter Style Presets (Prompt 5)
-public enum CaptionStylePreset: String, CaseIterable, Identifiable, Codable, Sendable {
+public enum CaptionStylePreset: String, CaseIterable, Identifiable, Codable, Hashable, Sendable {
     case minimal = "Minimal"
     case boldPop = "Bold Pop"
     case karaokeHighlight = "Karaoke"
@@ -110,7 +110,7 @@ public enum CaptionStylePreset: String, CaseIterable, Identifiable, Codable, Sen
 }
 
 /// CaptionStyle: Visual presentation configuration
-public struct CaptionStyle: Identifiable, Codable, Equatable, Sendable {
+public struct CaptionStyle: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let id: UUID
     public var name: String
     public var preset: CaptionStylePreset
@@ -221,3 +221,30 @@ public struct Project: Identifiable, Codable, Equatable, Sendable {
 // Backward-compatibility aliases
 public typealias SubtitleWord = CaptionWord
 public typealias SubtitleSegment = CaptionSegment
+
+// MARK: - Color Hex Conversion
+public extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch hex.count {
+        case 3: // RGB (12-bit)
+            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
+        case 6: // RGB (24-bit)
+            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        case 8: // ARGB (32-bit)
+            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (a, r, g, b) = (255, 255, 255, 255)
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
+    }
+}
